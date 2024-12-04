@@ -7,8 +7,10 @@ import uuid
 from dotenv import load_dotenv
 import os
 
-# โหลดค่า .env
-load_dotenv()
+# Load environment variables in development
+if os.getenv('ENVIRONMENT') != 'production':
+    from dotenv import load_dotenv
+    load_dotenv()
 
 # อ่านค่า Environment Variables
 API_KEY = os.getenv("API_KEY")
