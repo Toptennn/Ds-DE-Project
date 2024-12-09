@@ -39,7 +39,6 @@ class Paper(BaseModel):
     description: str = Field(..., max_length=1000, example="A detailed paper on market trends.")
     source: str = Field(..., example="https://example.com/paper")
     index: str = Field(..., example="nasdaq")
-    str("2020 - 2023"): str = Field(..., example="https://example.com/paper")
 
 class PaperResponse(Paper):
     paper_id: str
