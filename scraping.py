@@ -12,11 +12,15 @@ from pymongo.errors import ConnectionFailure, DuplicateKeyError
 import logging
 
 # ตั้งค่า logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename='scraping.log',  # บันทึกลงไฟล์ scraping.log
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # MongoDB Configuration
 MONGO_URI = "mongodb+srv://toptenwatthana:6Bc5Efc5klSSom05@paperdatabase.juww5.mongodb.net/"
-DB_NAME = "paper_database"                      # ชื่อฐานข้อมูลที่คุณให้มา
+DB_NAME = "paper_database"                      # ชื่อฐานข้อมูล
 COLLECTION_NAME = "research_papers"            # ชื่อ collection ที่ต้องการเก็บข้อมูล
 
 # Initialize MongoDB Client
@@ -47,25 +51,29 @@ def solve_captcha(api_key, site_url, site_key):
         }
     }
 
-    response = requests.post("https://api.capmonster.cloud/createTask", json=create_task_payload)
-    response.raise_for_status()  # ตรวจสอบข้อผิดพลาด HTTP
-    task_id = response.json().get("taskId")
-    
-    if not task_id:
-        logging.error("Error creating CAPTCHA task: %s", response.json())
+    try:
+        response = requests.post("https://api.capmonster.cloud/createTask", json=create_task_payload)
+        response.raise_for_status()  # ตรวจสอบข้อผิดพลาด HTTP
+        task_id = response.json().get("taskId")
+        
+        if not task_id:
+            logging.error("Error creating CAPTCHA task: %s", response.json())
+            return None
+
+        while True:
+            result_payload = {"clientKey": api_key, "taskId": task_id}
+            result_response = requests.post("https://api.capmonster.cloud/getTaskResult", json=result_payload)
+            result_response.raise_for_status()
+            result = result_response.json()
+
+            if result.get("status") == "ready":
+                return result["solution"]["gRecaptchaResponse"]
+            else:
+                logging.info("Waiting for CAPTCHA solution...")
+                time.sleep(5)
+    except requests.RequestException as e:
+        logging.error("CAPTCHA solving request failed: %s", e)
         return None
-
-    while True:
-        result_payload = {"clientKey": api_key, "taskId": task_id}
-        result_response = requests.post("https://api.capmonster.cloud/getTaskResult", json=result_payload)
-        result_response.raise_for_status()
-        result = result_response.json()
-
-        if result.get("status") == "ready":
-            return result["solution"]["gRecaptchaResponse"]
-        else:
-            logging.info("Waiting for CAPTCHA solution...")
-            time.sleep(5)
 
 # Selenium WebDriver Setup
 options = Options()
@@ -190,9 +198,8 @@ try:
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         page = 400
         onclick_str = f"ResultsTables['sourceResults'].setRange ({page}, 200); ResultsTables['sourceResults'].onCriteriaChanged (); return false;"
-        is_next = soup.find('a', {'onclick': onclick_str})
-        element = driver.find_elements(By.CSS_SELECTOR, "a.btn.btn-link")
-        for n in element:
+        elements = driver.find_elements(By.CSS_SELECTOR, "a.btn.btn-link")
+        for n in elements:
             if f"({page}, 200)" in str(n.get_attribute("onclick")):
                 logging.info("Found and clicking the desired page link.")
                 n.click()
@@ -225,6 +232,16 @@ try:
         driver.save_screenshot("error_extract_links.png")
         raise
 
+    # โหลดชื่อที่มีอยู่แล้วจากฐานข้อมูลเพื่อเพิ่มประสิทธิภาพ
+    try:
+        existing_titles = set(doc['title'] for doc in collection.find({}, {'title': 1}))
+        logging.info("Loaded %d existing titles from MongoDB.", len(existing_titles))
+    except Exception as e:
+        logging.error("Failed to load existing titles from MongoDB: %s", e)
+        existing_titles = set()
+
+    # ข้ามลิงก์ที่มีอยู่แล้วในฐานข้อมูลโดยใช้ 'title'
+    logging.info("Starting to process links...")
     for href in hrefs:
         logging.info("Processing link: %s", href)
         try:
@@ -273,7 +290,7 @@ try:
                 logging.error("Failed to solve CAPTCHA.")
                 driver.save_screenshot(f"error_failed_captcha_{href.replace('/', '_')}.png")
                 continue  # ข้ามไปยังแหล่งข้อมูลถัดไป
-        
+
         time.sleep(2)
         title_tag = soup.find('h2', {'class': 'jnlTitle'})
         if not title_tag:
@@ -282,103 +299,124 @@ try:
             continue
         title = title_tag.text.strip()
         logging.info("Extracted title: %s", title)
-        
+
+        # ตรวจสอบว่าชื่อได้ถูกบันทึกไปแล้วหรือยัง
+        if title in existing_titles:
+            logging.info("Skipping already processed title: %s", title)
+            continue
+
         # ดึงปีที่เผยแพร่
         year_tag = soup.find("span", class_="right")
         if not year_tag:
             logging.error("Published year not found for %s.", title)
-            driver.save_screenshot(f"error_published_year_{href.replace('/', '_')}.png")
+            driver.save_screenshot(f"error_published_year_{title.replace('/', '_')}.png")
             continue
         year_text = year_tag.text.strip()
         year = year_text.split(' ')[0].rstrip(',')
         if not year.isdigit():
             year = year_text.split(' ')[1] if len(year_text.split(' ')) > 1 else "Unknown"
         logging.info("Published year: %s", year)
-        
+
         # ดึงข้อมูลการอ้างอิง
-        citations = []
+        citations = 0
+        documents = 0
         citation_tag = soup.find('a', {'title': 'Display all citing documents for this source in this year'})
-        if not citation_tag:
+        document_tag = soup.find('a', {'title': 'Display all documents for this source for these years'})
+        if not citation_tag or not document_tag:
             logging.warning("No citation information found for paper: %s", title)
+            # ข้ามการบันทึกข้อมูลนี้
             continue
-        
+
         try:
             citation_count = int(citation_tag.text.strip().split(' ')[0].replace(',', ''))
-            citations.append({f'{2020} - {2023}': citation_count})  # ตัวอย่างช่วงเวลา
+            citations += citation_count  # ตัวอย่างช่วงเวลา
+            document_count = int(document_tag.text.strip().split(' ')[0].replace(',', ''))
+            documents += document_count  # ตัวอย่างช่วงเวลา
             logging.info("Citations (2020-2023): %d", citation_count)
+            logging.info("Documents (2020-2023): %d", document_count)
         except (ValueError, IndexError) as e:
-            logging.error("Error parsing citation count for paper %s: %s", title, e)
+            logging.error("Error parsing citation or document count for paper %s: %s", title, e)
             continue
-        
+
         # จัดการกับการอ้างอิงตามช่วงปีต่างๆ
         find_selectmenu = soup.find('span', {'id': 'year-button'})
         if not find_selectmenu:
             logging.warning("Year select menu not found for paper: %s", title)
             continue
-        
-        try:
-            logging.info("Clicking on year select menu.")
-            WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.CLASS_NAME, "ui-selectmenu-icon"))
-            ).click()
+
+        # try:
+        #     logging.info("Clicking on year select menu.")
+        #     WebDriverWait(driver, 10).until(
+        #         EC.element_to_be_clickable((By.CLASS_NAME, "ui-selectmenu-icon"))
+        #     ).click()
             
-            all_years = soup.find('ul', {'class': 'ui-menu ui-corner-bottom ui-widget ui-widget-content'})
-            years_interval = all_years.find_all('li', {'class': 'ui-menu-item'})
-            logging.info("Found %d year intervals.", len(years_interval))
-            for i in range(2, len(years_interval) + 1):
-                try:
-                    year_id = f"ui-id-{i}"
-                    logging.info("Selecting year interval ID: %s", year_id)
-                    WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.ID, year_id))
-                    ).click()
-                    time.sleep(1)
+        #     all_years = soup.find('ul', {'class': 'ui-menu ui-corner-bottom ui-widget ui-widget-content'})
+        #     years_interval = all_years.find_all('li', {'class': 'ui-menu-item'})
+        #     logging.info("Found %d year intervals.", len(years_interval))
+        #     for i in range(2, len(years_interval) + 1):
+        #         try:
+        #             year_id = f"ui-id-{i}"
+        #             logging.info("Selecting year interval ID: %s", year_id)
+        #             WebDriverWait(driver, 10).until(
+        #                 EC.element_to_be_clickable((By.ID, year_id))
+        #             ).click()
+        #             time.sleep(1)
                     
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'a[title="Display all citing documents for this source in this year"]'))
-                    )
+        #             WebDriverWait(driver, 10).until(
+        #                 EC.presence_of_element_located((By.CSS_SELECTOR, 'a[title="Display all citing documents for this source in this year"]'))
+        #             )
                     
-                    soup = BeautifulSoup(driver.page_source, 'html.parser')
-                    citation_text = soup.find('a', {'title': 'Display all citing documents for this source in this year'}).text.strip().split(' ')
-                    citation_number = int(citation_text[0].replace(',', ''))
-                    interval_start = 2024 - 3 - i
-                    interval_end = 2024 - i
-                    citations.append({f'{interval_start} - {interval_end}': citation_number})
-                    logging.info("Citations (%d-%d): %d", interval_start, interval_end, citation_number)
+        #             # ดึงข้อมูลการอ้างอิง
+        #             soup = BeautifulSoup(driver.page_source, 'html.parser')
+        #             citation_text = soup.find('a', {'title': 'Display all citing documents for this source in this year'}).text.strip().split(' ')
+        #             citation_number = int(citation_text[0].replace(',', ''))
+
+        #             # ดึงข้อมูลเอกสาร
+        #             document_text = soup.find('a', {'title': 'Display all documents for this source for these years'}).text.strip().split(' ')
+        #             document_number = int(document_text[0].replace(',', ''))
+
+        #             interval_start = 2024 - 3 - i
+        #             interval_end = 2024 - i
+        #             citations.append({f'{interval_start} - {interval_end}': citation_number})
+        #             documents.append({f'{interval_start} - {interval_end}': document_number})
+        #             logging.info("Citations (%d-%d): %d", interval_start, interval_end, citation_number)
+        #             logging.info("Documents (%d-%d): %d", interval_start, interval_end, document_number)
                     
-                    # เปิดเมนูเลือกใหม่
-                    WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.CLASS_NAME, "ui-selectmenu-icon"))
-                    ).click()
+        #             # เปิดเมนูเลือกใหม่
+        #             WebDriverWait(driver, 10).until(
+        #                 EC.element_to_be_clickable((By.CLASS_NAME, "ui-selectmenu-icon"))
+        #             ).click()
                     
-                    # เลื่อนไปยังองค์ประกอบที่กำหนด
-                    element = driver.find_element(By.ID, year_id)
-                    driver.execute_script("arguments[0].scrollIntoView();", element)
-                except Exception as e:
-                    logging.error("Error processing year interval %d for paper %s: %s", i, title, e)
-                    driver.save_screenshot(f"error_year_interval_{i}_{href.replace('/', '_')}.png")
-                    continue
-        except Exception as e:
-            logging.error("Error handling year-wise citations for paper %s: %s", title, e)
-            driver.save_screenshot(f"error_handling_year_{href.replace('/', '_')}.png")
-            continue
-        
+        #             # เลื่อนไปยังองค์ประกอบที่กำหนด
+        #             element = driver.find_element(By.ID, year_id)
+        #             driver.execute_script("arguments[0].scrollIntoView();", element)
+        #         except Exception as e:
+        #             logging.error("Error processing year interval %d for paper %s: %s", i, title, e)
+        #             driver.save_screenshot(f"error_year_interval_{i}_{title.replace('/', '_')}.png")
+        #             continue
+        # except Exception as e:
+        #     logging.error("Error handling year-wise citations/documents for paper %s: %s", title, e)
+        #     driver.save_screenshot(f"error_handling_year_{title.replace('/', '_')}.png")
+        #     continue
+
         # เตรียมเอกสารที่จะบันทึก
         paper_document = {
             'title': title,
-            'citation_per_year': citations,
+            'citation_2020_2023': citations,
+            'documents_2020_2023': documents,  # เพิ่มเอกสารที่นี่
             'published_year': year
         }
-        
+
         # บันทึกข้อมูลลง MongoDB
         try:
             collection.insert_one(paper_document)
+            existing_titles.add(title)  # เพิ่มชื่อที่ประมวลผลแล้วลงใน set
             logging.info("Inserted paper into MongoDB: %s", title)
         except DuplicateKeyError:
             logging.warning("Duplicate entry found for paper: %s", title)
         except Exception as e:
             logging.error("Error inserting paper into MongoDB: %s", e)
-    
+
 finally:
     driver.quit()
     client.close()
