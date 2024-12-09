@@ -26,7 +26,6 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
 collection = db["research_papers"]
-collection = db["research_papers"]
 
 # สร้าง FastAPI
 app = FastAPI()
@@ -136,7 +135,3 @@ async def delete_paper(paper_id: str, api_key: str = Depends(authenticate)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail=f"Paper with ID {paper_id} not found")
     return {"message": f"Paper with ID {paper_id} deleted successfully"}
-
-from mangum import Mangum
-
-handler = Mangum(app)
