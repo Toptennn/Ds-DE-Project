@@ -11,7 +11,9 @@ from typing import List, Dict, Any
 from fastapi.responses import StreamingResponse
 import io
 import csv
-from model_class import SentimentModel
+# from model_class import SentimentModel
+from pydantic import BaseModel, Field
+from typing import Optional
 
 # Load environment variables in development
 if os.getenv('ENVIRONMENT') != 'production':
@@ -39,33 +41,33 @@ def authenticate(api_key: str = Depends(api_key_header)):
 
 
 # Initialize the model
-model = SentimentModel()
+# model = SentimentModel()
 
-class SentimentRequest(BaseModel):
-    keyword: str
-    year_range: str
+# class SentimentRequest(BaseModel):
+#     keyword: str
+#     year_range: str
 
-# Response schema
-class SentimentResponse(BaseModel):
-    keyword: str
-    year_range: str
-    sentiment: int
+# # Response schema
+# class SentimentResponse(BaseModel):
+#     keyword: str
+#     year_range: str
+#     sentiment: int
 
 # POST API to predict sentiment
-@app.post("/predict-sentiment", response_model=SentimentResponse)
-async def predict_sentiment(request: SentimentRequest, api_key: str = Depends(authenticate)):
-    try:
-        # Get the sentiment prediction from the model
-        sentiment_score = model.predict_sentiment(request.keyword, request.year_range)
+# @app.post("/predict-sentiment", response_model=SentimentResponse)
+# async def predict_sentiment(request: SentimentRequest, api_key: str = Depends(authenticate)):
+#     try:
+#         # Get the sentiment prediction from the model
+#         sentiment_score = model.predict_sentiment(request.keyword, request.year_range)
 
-        # Return the prediction
-        return SentimentResponse(
-            keyword=request.keyword,
-            year_range=request.year_range,
-            sentiment=sentiment_score,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         # Return the prediction
+#         return SentimentResponse(
+#             keyword=request.keyword,
+#             year_range=request.year_range,
+#             sentiment=sentiment_score,
+#         )
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 # Schema สำหรับข้อมูล Paper
 class Citation(BaseModel):
@@ -73,19 +75,12 @@ class Citation(BaseModel):
     count: int = Field(..., example=484)
 
 class Paper(BaseModel):
+    id: Optional[str] = Field(..., alias="_id")  # Map '_id' field
     title: str = Field(..., example="Social Enterprise Journal")
-    citation_per_year: List[Dict[str, int]] = Field(
-        ..., 
-        example=[
-            {"2020 - 2023": 484},
-            {"2019 - 2022": 484},
-            {"2018 - 2021": 435},
-            {"2017 - 2020": 323},
-            {"2016 - 2019": 133},
-            {"2015 - 2018": 51}
-        ]
-    )
+    citation_2020_2023: int = Field(..., example=484)
+    documents_2020_2023: int = Field(..., example=113)
     published_year: str = Field(..., example="2012")
+
 
 # Schema สำหรับการตอบกลับ Paper
 class PaperResponse(BaseModel):
@@ -102,22 +97,7 @@ async def get_papers_csv(api_key: str = Depends(authenticate)):
         raise HTTPException(status_code=404, detail="No papers found")
 
     # Define the CSV column names
-    columns = [
-        "title",
-        "2020 - 2023",
-        "2019 - 2022",
-        "2018 - 2021",
-        "2017 - 2020",
-        "2016 - 2019",
-        "2015 - 2018",
-        "2014 - 2017",
-        "2013 - 2016",
-        "2012 - 2015",
-        "2011 - 2014",
-        "2010 - 2013",
-        "2009 - 2012",
-        "2008 - 2011",
-    ]
+    columns = ["title", "documents", "citations"]
 
     # Create an in-memory CSV file
     csv_file = io.StringIO()
@@ -126,14 +106,11 @@ async def get_papers_csv(api_key: str = Depends(authenticate)):
 
     # Transform MongoDB documents into rows for CSV
     for paper in papers:
-        row = {"title": paper["title"]}
-        for year_range in columns[1:]:  # Skip the title column
-            # Find the citation value for the year range
-            citation = next(
-                (item[year_range] for item in paper.get("citation_per_year", []) if year_range in item),
-                0,  # Default to 0 if year range is not found
-            )
-            row[year_range] = citation
+        row = {
+            "title": paper["title"],
+            "documents": paper.get("documents_2020_2023", 0),  # Default to 0 if not found
+            "citations": paper.get("citation_2020_2023", 0),  # Default to 0 if not found
+        }
         csv_writer.writerow(row)
 
     # Move to the start of the file
@@ -145,6 +122,7 @@ async def get_papers_csv(api_key: str = Depends(authenticate)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=papers.csv"}
     )
+
 
 # DELETE: Delete a paper by title
 @app.delete("/papers/title/{title}", response_description="Delete a paper by title")
