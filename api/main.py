@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import APIKeyHeader
 from pymongo import MongoClient
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Dict, Any
 import uuid
 from dotenv import load_dotenv
 import os
@@ -20,7 +20,7 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 # เชื่อมต่อ MongoDB
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
-collection = db["papers"]
+collection = db["research_papers"]
 
 # สร้าง FastAPI
 app = FastAPI()
@@ -33,12 +33,14 @@ def authenticate(api_key: str = Depends(api_key_header)):
         raise HTTPException(status_code=403, detail="Unauthorized")
 
 # Schema สำหรับข้อมูล Paper
+class Citation(BaseModel):
+    period: str = Field(..., example="2020 - 2023")
+    count: int = Field(..., example=484)
+
 class Paper(BaseModel):
-    title: str = Field(..., example="Understanding Market Trends")
-    publish_date: str = Field(..., example="2023-12-01")
-    description: str = Field(..., max_length=1000, example="A detailed paper on market trends.")
-    source: str = Field(..., example="https://example.com/paper")
-    index: str = Field(..., example="nasdaq")
+    title: str = Field(..., example="Social Enterprise Journal")
+    citation_per_year: List[Citation]
+    published_year: str = Field(..., example="2012")
 
 class PaperResponse(Paper):
     paper_id: str
@@ -74,3 +76,7 @@ async def delete_paper(paper_id: str, api_key: str = Depends(authenticate)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail=f"Paper with ID {paper_id} not found")
     return {"message": f"Paper with ID {paper_id} deleted successfully"}
+
+from mangum import Mangum
+
+handler = Mangum(app)
