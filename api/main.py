@@ -7,7 +7,7 @@ import uuid
 from dotenv import load_dotenv
 import os
 from pydantic import BaseModel, Field
-from typing import List, Dict
+from typing import List, Dict, Any
 from fastapi.responses import StreamingResponse
 import io
 import csv
@@ -57,16 +57,12 @@ class Paper(BaseModel):
     )
     published_year: str = Field(..., example="2012")
 
-class PaperResponse(Paper):
+# Schema สำหรับการตอบกลับ Paper
+class PaperResponse(BaseModel):
+    title: str
+    citation_per_year: List[Dict[str, int]]
+    published_year: str
     paper_id: str
-
-# POST: เพิ่มข้อมูลเข้า MongoDB
-@app.post("/papers", response_description="Add new paper", response_model=PaperResponse)
-async def add_paper(paper: Paper, api_key: str = Depends(authenticate)):
-    paper_id = str(uuid.uuid4())
-    data = {**paper.dict(), "paper_id": paper_id}
-    collection.insert_one(data)
-    return data
 
 @app.get("/papers/csv", response_description="Get all papers in CSV format")
 async def get_papers_csv(api_key: str = Depends(authenticate)):
@@ -120,18 +116,12 @@ async def get_papers_csv(api_key: str = Depends(authenticate)):
         headers={"Content-Disposition": "attachment; filename=papers.csv"}
     )
 
-# GET: ดึงข้อมูลตามดัชนี (Index)
-@app.get("/papers/{index}", response_model=List[PaperResponse], response_description="Get papers by index")
-async def get_papers_by_index(index: str, api_key: str = Depends(authenticate)):
-    papers = list(collection.find({"index": index}, {"_id": 0}))
-    if not papers:
-        raise HTTPException(status_code=404, detail=f"No papers found for index {index}")
-    return papers
 
-# DELETE: ลบข้อมูลโดยใช้ paper_id
-@app.delete("/papers/{paper_id}", response_description="Delete a paper")
-async def delete_paper(paper_id: str, api_key: str = Depends(authenticate)):
-    result = collection.delete_one({"paper_id": paper_id})
+# DELETE: Delete a paper by title
+@app.delete("/papers/title/{title}", response_description="Delete a paper by title")
+async def delete_paper_by_title(title: str, api_key: str = Depends(authenticate)):
+    result = collection.delete_one({"title": title})
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail=f"Paper with ID {paper_id} not found")
-    return {"message": f"Paper with ID {paper_id} deleted successfully"}
+        raise HTTPException(status_code=404, detail=f"Paper with title '{title}' not found")
+    return {"message": f"Paper with title '{title}' deleted successfully"}
+
