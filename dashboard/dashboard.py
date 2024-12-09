@@ -24,8 +24,8 @@ def fetch_and_preprocess_csv():
         for row in csv_reader:
             rows.append({
                 "title": row["title"],
-                "citations": int(row.get("2020 - 2023", 0)),  # Default to 0 if not found
-                "documents": random.randint(100, 400),  # Add a random number between 100-400
+                "citations": int(row.get("citations", 0)),  # Default to 0 if not found
+                "documents": int(row.get("documents", 0)),  # Add a random number between 100-400
             })
         return pd.DataFrame(rows)
     else:
