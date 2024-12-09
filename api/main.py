@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 from fastapi.responses import StreamingResponse
 import io
 import csv
+from model_class import SentimentModel
 
 # Load environment variables in development
 if os.getenv('ENVIRONMENT') != 'production':
@@ -29,13 +30,42 @@ collection = db["research_papers"]
 
 # สร้าง FastAPI
 app = FastAPI()
-
 # API Key Authentication
 api_key_header = APIKeyHeader(name="X-API-Key")
 
 def authenticate(api_key: str = Depends(api_key_header)):
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Unauthorized")
+
+
+# Initialize the model
+model = SentimentModel()
+
+class SentimentRequest(BaseModel):
+    keyword: str
+    year_range: str
+
+# Response schema
+class SentimentResponse(BaseModel):
+    keyword: str
+    year_range: str
+    sentiment: int
+
+# POST API to predict sentiment
+@app.post("/predict-sentiment", response_model=SentimentResponse)
+async def predict_sentiment(request: SentimentRequest, api_key: str = Depends(authenticate)):
+    try:
+        # Get the sentiment prediction from the model
+        sentiment_score = model.predict_sentiment(request.keyword, request.year_range)
+
+        # Return the prediction
+        return SentimentResponse(
+            keyword=request.keyword,
+            year_range=request.year_range,
+            sentiment=sentiment_score,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Schema สำหรับข้อมูล Paper
 class Citation(BaseModel):
@@ -115,7 +145,6 @@ async def get_papers_csv(api_key: str = Depends(authenticate)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=papers.csv"}
     )
-
 
 # DELETE: Delete a paper by title
 @app.delete("/papers/title/{title}", response_description="Delete a paper by title")
